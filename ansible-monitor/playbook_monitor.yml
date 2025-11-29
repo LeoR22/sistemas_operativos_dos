@@ -1,0 +1,190 @@
+---
+- name: Provisionar Prometheus y Grafana en VM monitor
+  hosts: local
+  become: yes
+
+  vars:
+    prometheus_version: "2.52.0"   
+    node_exporter_version: "1.8.1"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    # ----------------- Instalar Grafana desde repo oficial -----------------
+    - name: Install prerequisites for Grafana repo
+      apt:
+        name:
+          - apt-transport-https
+          - software-properties-common
+          - wget
+        state: present
+
+    - name: Add Grafana GPG key
+      apt_key:
+        url: https://packages.grafana.com/gpg.key
+        state: present
+
+    - name: Add Grafana stable repository
+      apt_repository:
+        repo: "deb https://packages.grafana.com/oss/deb stable main"
+        state: present
+        filename: grafana
+
+    - name: Install grafana
+      apt:
+        name: grafana
+        state: present
+        update_cache: yes
+
+    - name: Ensure grafana-server is running and enabled
+      service:
+        name: grafana-server
+        state: started
+        enabled: yes
+
+    # ----------------- Instalar Prometheus -----------------
+    - name: Install dependencies for Prometheus
+      apt:
+        name:
+          - wget
+          - tar
+        state: present
+
+    - name: Create Prometheus user and directories
+      block:
+        - user:
+            name: prometheus
+            shell: /usr/sbin/nologin
+            system: yes
+        - file:
+            path: /etc/prometheus
+            state: directory
+            owner: prometheus
+            group: prometheus
+        - file:
+            path: /var/lib/prometheus
+            state: directory
+            owner: prometheus
+            group: prometheus
+
+    - name: Download Prometheus tarball
+      get_url:
+        url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+        dest: /tmp/prometheus.tar.gz
+
+    - name: Extract Prometheus
+      unarchive:
+        src: /tmp/prometheus.tar.gz
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Install Prometheus binaries
+      copy:
+        src: "/tmp/prometheus-{{ prometheus_version }}.linux-amd64/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        mode: "0755"
+      loop:
+        - prometheus
+        - promtool
+
+    - name: Copy Prometheus consoles and libraries
+      copy:
+        src: "/tmp/prometheus-{{ prometheus_version }}.linux-amd64/{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: prometheus
+        group: prometheus
+      loop:
+        - { src: 'consoles', dest: '/etc/prometheus/consoles' }
+        - { src: 'console_libraries', dest: '/etc/prometheus/console_libraries' }
+
+    - name: Create basic Prometheus config
+      copy:
+        dest: /etc/prometheus/prometheus.yml
+        owner: prometheus
+        group: prometheus
+        mode: "0644"
+        content: |
+          global:
+            scrape_interval: 15s
+
+          scrape_configs:
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['localhost:9090']
+
+    - name: Create Prometheus systemd unit
+      copy:
+        dest: /etc/systemd/system/prometheus.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Prometheus
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          User=prometheus
+          Group=prometheus
+          Type=simple
+          ExecStart=/usr/local/bin/prometheus \
+            --config.file=/etc/prometheus/prometheus.yml \
+            --storage.tsdb.path=/var/lib/prometheus \
+            --web.console.templates=/etc/prometheus/consoles \
+            --web.console.libraries=/etc/prometheus/console_libraries
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd and start Prometheus
+      systemd:
+        daemon_reload: yes
+        name: prometheus
+        state: started
+        enabled: yes
+
+    # -----------------  Node Exporter para métricas del host -----------------
+    - name: Download Node Exporter tarball
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+        dest: /tmp/node_exporter.tar.gz
+
+    - name: Extract Node Exporter
+      unarchive:
+        src: /tmp/node_exporter.tar.gz
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Install Node Exporter binary
+      copy:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
+        dest: "/usr/local/bin/node_exporter"
+        mode: "0755"
+
+    - name: Create Node Exporter systemd unit
+      copy:
+        dest: /etc/systemd/system/node_exporter.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Node Exporter
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          User=nobody
+          ExecStart=/usr/local/bin/node_exporter
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd and start Node Exporter
+      systemd:
+        daemon_reload: yes
+        name: node_exporter
+        state: started
+        enabled: yes

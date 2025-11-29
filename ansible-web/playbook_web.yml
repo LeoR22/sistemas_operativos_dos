@@ -1,0 +1,29 @@
+---
+- name: Provisionar Nginx en VM web
+  hosts: local
+  become: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Ensure nginx is running and enabled
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Deploy custom index.html
+      copy:
+        src: ./files/index.html
+        dest: /var/www/html/index.html
+        owner: www-data
+        group: www-data
+        mode: "0644"
